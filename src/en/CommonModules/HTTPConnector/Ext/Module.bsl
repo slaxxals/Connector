@@ -1040,7 +1040,7 @@ Function DateFromStringRFC7231(Val String) Export
 
 EndFunction
 
-Function CallHTTPMethod(Session, Method, URL, AdditionalParameters)
+Function CallHTTPMethod_BeforeRefactoring(Session, Method, URL, AdditionalParameters)
 
 	HTTPStatusCodes = HTTPStatusCodes();
 
@@ -1086,6 +1086,70 @@ Function CallHTTPMethod(Session, Method, URL, AdditionalParameters)
 	Raise("TooManyRedirects");
 
 EndFunction
+
+Function CallHTTPMethod(Session, Method, URL, AdditionalParameters)
+
+	PreparedRequest = PrepareRequest(Session, Method, URL, AdditionalParameters);
+
+	ConnectionSettings = ConnectionSettings(Method, URL, AdditionalParameters);
+
+	Response = SendRequest(Session, PreparedRequest, ConnectionSettings);
+	
+	If ConnectionSettings.AllowRedirect And Response.IsRedirect Then
+		Response = RedirectRequest(Session, ConnectionSettings, PreparedRequest, Response);
+	EndIf;
+	
+	Return Response;
+
+EndFunction
+
+Function RedirectRequest(Session, ConnectionSettings, PreparedRequest, RedirectedResponse)
+	
+	NumberOfRedirects = 0;
+	
+	While RedirectedResponse.IsRedirect Do
+		
+		PrepareRequestForRedirection(Session, PreparedRequest, RedirectedResponse);
+		
+		RedirectedResponse = SendRequest(Session, PreparedRequest, ConnectionSettings);
+		
+		NumberOfRedirects = NumberOfRedirects + 1;
+		
+		If NumberOfRedirects > Session.MaximumNumberOfRedirects Then
+			Raise("TooManyRedirects");
+		EndIf;
+		
+	EndDo;
+	
+	Return RedirectedResponse;
+	
+EndFunction
+
+Procedure PrepareRequestForRedirection(Session, PreparedRequest, RedirectedResponse)
+	
+	HTTPStatusCodes = HTTPStatusCodes();
+	
+	NewURL = NewURLOnRedirect(RedirectedResponse);
+
+	PreparedRequest.URL = EncodeString(NewURL, StringEncodingMethod.URLInURLEncoding);
+	NewHTTPRequest = New HTTPRequest(AssembleResourceAddress(ParseURL(NewURL), Undefined));
+	OverrideMethod(PreparedRequest, RedirectedResponse);
+
+	If RedirectedResponse.StatusCode <> HTTPStatusCodes.TemporaryRedirect_307
+		And RedirectedResponse.StatusCode <> HTTPStatusCodes.PermanentRedirect_308 Then
+		RemoveHeaders(PreparedRequest.Headers, "content-length,content-type,transfer-encoding");
+		NewHTTPRequest.Headers = PreparedRequest.Headers;
+	Else
+		SourceStream = PreparedRequest.HTTPRequest.GetBodyAsStream();
+		SourceStream.CopyTo(NewHTTPRequest.GetBodyAsStream());
+	EndIf;
+	PreparedRequest.HTTPRequest = NewHTTPRequest;
+	RemoveHeaders(PreparedRequest.Headers, "cookies");
+
+	PreparedRequest.Cookies = MergeCookies(Session.Cookies, PreparedRequest.Cookies);
+	PrepareCookies(PreparedRequest);
+	
+EndProcedure
 
 Function NewURLOnRedirect(Response)
 
